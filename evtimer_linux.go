@@ -1,12 +1,8 @@
 package evtimer
 
-//#include <sys/timerfd.h>
-import "C"
 import (
 	"fmt"
 	"os"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -16,10 +12,9 @@ type _EventArgs struct {
 	ev *Event
 }
 type Evtimer struct {
-	count    atomic.Int32
-	eid      int
-	argslock sync.Mutex
-	args     map[int32]_EventArgs
+	count int32
+	eid   int
+	args  map[int32]_EventArgs
 }
 type Itimerspec struct {
 	Interval syscall.Timespec
@@ -49,9 +44,6 @@ func (et *Evtimer) Add(ev Event, exp time.Duration) {
 		return
 	}
 	ns := exp.Nanoseconds()
-	// var its C.struct_itimerspec
-	// its.it_value.tv_sec = C.long(ns / _dis)
-	// its.it_value.tv_nsec = C.long(ns % _dis)
 	var its Itimerspec
 	its.Value.Sec = ns / _dis
 	its.Value.Nsec = ns % _dis
@@ -63,12 +55,10 @@ func (et *Evtimer) Add(ev Event, exp time.Duration) {
 	e.Events = syscall.EPOLLIN
 	e.Fd = td
 	syscall.EpollCtl(et.eid, syscall.EPOLL_CTL_ADD, int(td), &e)
-	et.argslock.Lock()
 	et.args[td] = _EventArgs{
 		ev: &ev,
 	}
-	et.argslock.Unlock()
-	et.count.Add(1)
+	et.count++
 }
 
 const (
@@ -79,10 +69,8 @@ func (et *Evtimer) handle(td int32) {
 	var exp [8]byte
 	syscall.Read(int(td), exp[:])
 	syscall.Close(int(td))
-	et.argslock.Lock()
 	ea := et.args[td]
 	delete(et.args, td)
-	et.argslock.Unlock()
 	ea.ev.Cb(et, ea.ev)
 }
 func Run(et *Evtimer) {
@@ -98,17 +86,17 @@ func Run(et *Evtimer) {
 		}
 		for i := 0; i < n; i++ {
 			syscall.EpollCtl(syscall.EPOLL_CTL_DEL, syscall.EPOLLIN, int(elist[i].Fd), &elist[i])
-			et.count.Add(-1)
+			et.count--
 			et.handle(elist[i].Fd)
 		}
 	}
 
 }
 func Wait(et *Evtimer) {
-	for et.count.Load() > 0 {
+	for et.count > 0 {
 		time.Sleep(time.Millisecond * 100)
 	}
 }
 func TryWait(et *Evtimer) bool {
-	return et.count.Load() == 0
+	return et.count == 0
 }

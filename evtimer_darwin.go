@@ -3,18 +3,15 @@ package evtimer
 import (
 	"fmt"
 	"os"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 type Evtimer struct {
-	kd       int
-	argslock sync.Mutex
-	args     map[int32]*Event
-	count    atomic.Int32
-	idcount  uint32
+	kd      int
+	args    map[int32]*Event
+	count   int32
+	idcount uint32
 }
 
 func NewEvtimer() *Evtimer {
@@ -38,13 +35,11 @@ func (et *Evtimer) Add(ev Event, exp time.Duration) {
 	ke[0].Fflags = syscall.NOTE_SECONDS
 	ke[0].Data = exp.Nanoseconds() / _dis
 	_, err := syscall.Kevent(et.kd, ke[:], nil, nil)
-	et.count.Add(1)
+	et.count++
 	if err != nil {
 		panic("[kevent add timer event error]" + err.Error())
 	}
-	et.argslock.Lock()
 	et.args[int32(fd)] = &ev
-	et.argslock.Unlock()
 }
 
 const int32edge = (1 << 31) - 1
@@ -62,7 +57,7 @@ func Run(et *Evtimer) {
 	var ts syscall.Timespec = syscall.Timespec{
 		Sec: 1,
 	}
-	for {
+	for et.count > 0 {
 		n, err := syscall.Kevent(et.kd, nil, event_list[:], &ts)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "[kevent error]"+err.Error())
@@ -76,12 +71,10 @@ func Run(et *Evtimer) {
 			de.Ident = e.Ident
 			de.Filter = e.Filter
 			de.Flags = syscall.EV_DELETE
-			et.argslock.Lock()
 			ea := et.args[int32(e.Ident)]
 			delete(et.args, int32(e.Ident))
-			et.argslock.Unlock()
 			ea.Cb(et, ea)
-			et.count.Add(-1)
+			et.count--
 		}
 		_, err = syscall.Kevent(et.kd, del_event_list[:n], nil, nil)
 		if err != nil {
@@ -95,5 +88,5 @@ func Wait(et *Evtimer) {
 	}
 }
 func TryWait(et *Evtimer) bool {
-	return et.count.Load() < 1
+	return et.count < 1
 }
